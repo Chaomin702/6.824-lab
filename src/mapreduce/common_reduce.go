@@ -2,7 +2,8 @@ package mapreduce
 
 import (
 	"encoding/json"
-	"fmt"
+	"io"
+	"log"
 	"os"
 )
 
@@ -43,23 +44,30 @@ func doReduce(
 	for i := range files {
 		files[i], err = os.Open(reduceName(jobName, i, reduceTaskNumber))
 		if err != nil {
-			fmt.Println("cannot open file ", reduceName(jobName, i, reduceTaskNumber))
+			log.Fatal(err, reduceName(jobName, i, reduceTaskNumber))
 		}
+		defer files[i].Close()
 		dec := json.NewDecoder(files[i])
 		for {
 			var kv KeyValue
-			err = dec.Decode(&kv)
-			if err != nil {
+			if err = dec.Decode(&kv); err == io.EOF {
 				break
+			} else if err != nil {
+				log.Fatal(err)
 			}
+
 			keyMaps[kv.Key] = append(keyMaps[kv.Key], kv.Value)
 		}
-		files[i].Close()
+
 	}
 	mergeFile, err := os.Create(mergeName(jobName, reduceTaskNumber))
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer mergeFile.Close()
 	enc := json.NewEncoder(mergeFile)
 	for key := range keyMaps {
 		enc.Encode(KeyValue{key, reduceF(key, keyMaps[key])})
 	}
-	mergeFile.Close()
+
 }

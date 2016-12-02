@@ -24,7 +24,7 @@ const (
 
 // Split in words
 func MapFunc(file string, value string) (res []KeyValue) {
-//	debug("Map %v\n", value)
+	//	debug("Map %v\n", value)
 	words := strings.Fields(value)
 	for _, w := range words {
 		kv := KeyValue{w, ""}
@@ -35,9 +35,9 @@ func MapFunc(file string, value string) (res []KeyValue) {
 
 // Just return key
 func ReduceFunc(key string, values []string) string {
-//	for _, e := range values {
-//		debug("Reduce %s %v\n", key, e)
-//	}
+	//	for _, e := range values {
+	//		debug("Reduce %s %v\n", key, e)
+	//	}
 	return ""
 }
 
@@ -119,19 +119,19 @@ func makeInputs(num int) []string {
 // Cook up a unique-ish UNIX-domain socket name
 // in /var/tmp. can't use current directory since
 // AFS doesn't support UNIX-domain sockets.
-func port(suffix string) string {
-	s := "/var/tmp/824-"
+func port(suffix int) string {
+	/*s := "/var/tmp/824-"
 	s += strconv.Itoa(os.Getuid()) + "/"
 	os.Mkdir(s, 0777)
 	s += "mr"
-	s += strconv.Itoa(os.Getpid()) + "-"
-	s += suffix
-	return s
+	s += strconv.Itoa(os.Getpid()) + "-"*/
+	s := suffix + 5101
+	return ":" + strconv.Itoa(s)
 }
 
 func setup() *Master {
 	files := makeInputs(nMap)
-	master := port("master")
+	master := ":5100"
 	mr := Distributed("test", files, nReduce, master)
 	return mr
 }
@@ -162,7 +162,7 @@ func TestSequentialMany(t *testing.T) {
 func TestBasic(t *testing.T) {
 	mr := setup()
 	for i := 0; i < 2; i++ {
-		go RunWorker(mr.address, port("worker"+strconv.Itoa(i)),
+		go RunWorker(mr.address, port(i),
 			MapFunc, ReduceFunc, -1)
 	}
 	mr.Wait()
@@ -174,9 +174,9 @@ func TestBasic(t *testing.T) {
 func TestOneFailure(t *testing.T) {
 	mr := setup()
 	// Start 2 workers that fail after 10 tasks
-	go RunWorker(mr.address, port("worker"+strconv.Itoa(0)),
+	go RunWorker(mr.address, port(0),
 		MapFunc, ReduceFunc, 10)
-	go RunWorker(mr.address, port("worker"+strconv.Itoa(1)),
+	go RunWorker(mr.address, port(1),
 		MapFunc, ReduceFunc, -1)
 	mr.Wait()
 	check(t, mr.files)
@@ -196,10 +196,10 @@ func TestManyFailures(t *testing.T) {
 			break
 		default:
 			// Start 2 workers each sec. The workers fail after 10 tasks
-			w := port("worker" + strconv.Itoa(i))
+			w := port(i)
 			go RunWorker(mr.address, w, MapFunc, ReduceFunc, 10)
 			i++
-			w = port("worker" + strconv.Itoa(i))
+			w = port(i)
 			go RunWorker(mr.address, w, MapFunc, ReduceFunc, 10)
 			i++
 			time.Sleep(1 * time.Second)

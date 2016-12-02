@@ -46,7 +46,8 @@ func (wk *Worker) Shutdown(_ *struct{}, res *ShutdownReply) error {
 	defer wk.Unlock()
 	res.Ntasks = wk.nTasks
 	wk.nRPC = 1
-	wk.nTasks-- // Don't count the shutdown RPC
+	wk.nTasks--  // Don't count the shutdown RPC
+	wk.l.Close() //close the port
 	return nil
 }
 
@@ -76,7 +77,7 @@ func RunWorker(MasterAddress string, me string,
 	rpcs := rpc.NewServer()
 	rpcs.Register(wk)
 	os.Remove(me) // only needed for "unix"
-	l, e := net.Listen("unix", me)
+	l, e := net.Listen("tcp", me)
 	if e != nil {
 		log.Fatal("RunWorker: worker ", me, " error: ", e)
 	}

@@ -1,6 +1,9 @@
 package mapreduce
 
 import "fmt"
+import (
+	"sync"
+)
 
 // schedule starts and waits for all tasks in the given phase (Map or Reduce).
 func (mr *Master) schedule(phase jobPhase) {
@@ -24,38 +27,29 @@ func (mr *Master) schedule(phase jobPhase) {
 	//
 	// TODO TODO TODO TODO TODO TODO TODO TODO TODO TODO TODO TODO TODO
 	//
-	nworks := len(mr.workers)
-	if phase == mapPhase {
-		for i := 0; i < nworks; i++ {
-			fmt.Println("work name ", <-mr.registerChannel)
-		}
-	}
-	taskBelongs := make([][]int, nworks)
+	var wg sync.WaitGroup
 	for i := 0; i < ntasks; i++ {
-		taskBelongs[i%nworks] = append(taskBelongs[i%nworks], i)
+		wg.Add(1)
+		go func(taskNum int, nios int, phase jobPhase) {
+			defer wg.Done()
+			for {
+				work := <-mr.registerChannel
+				args := new(DoTaskArgs)
+				args.File = mr.files[taskNum]
+				args.JobName = mr.jobName
+				args.NumOtherPhase = nios
+				args.Phase = phase
+				args.TaskNumber = taskNum
+				ok := call(work, "Worker.DoTask", &args, new(struct{}))
+				if ok == true {
+					go func() {
+						mr.registerChannel <- work
+					}()
+					break
+				}
+			}
+		}(i, nios, phase)
 	}
-	chs := make([]chan int, nworks)
-
-	f := func(srv string, tasks []int, ch chan int) {
-		for _, v := range tasks {
-			taskArgs := new(DoTaskArgs)
-			taskArgs.File = mr.files[v]
-			taskArgs.JobName = mr.jobName
-			taskArgs.NumOtherPhase = nios
-			taskArgs.Phase = phase
-			taskArgs.TaskNumber = v
-			call(srv, "Worker.DoTask", &taskArgs, new(struct{}))
-		}
-		ch <- 1
-	}
-	for i := 0; i < nworks; i++ {
-		chs[i] = make(chan int)
-		go f(mr.workers[i], taskBelongs[i], chs[i])
-	}
-	for _, ch := range chs {
-		<-ch
-	}
-	//taskArgs := new(DoTaskArgs)
-
+	wg.Wait()
 	fmt.Printf("Schedule: %v phase done\n", phase)
 }

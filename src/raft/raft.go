@@ -48,7 +48,7 @@ const (
 )
 
 // Debugging enabled?
-const debugEnabled = false
+const debugEnabled = true
 
 // DPrintf will only print if the debugEnabled const has been set to true
 func debug(a ...interface{}) (n int, err error) {
@@ -56,6 +56,12 @@ func debug(a ...interface{}) (n int, err error) {
 		n, err = fmt.Println(a...)
 	}
 	return
+}
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 //
@@ -82,6 +88,7 @@ type Raft struct {
 	//electionTimeCh chan time.Time
 	voteForCh     chan int //vote request chan
 	appendEntryCh chan int //appendEntry request chan
+	applyMsgCh    chan int
 }
 
 func (rf *Raft) String() string {
@@ -241,8 +248,9 @@ func (args AppendEntriesArgs) String() string {
 }
 
 type AppendEntriesReply struct {
-	Term    int //currentTerm, for leader to update itself
-	Success bool
+	Term      int //currentTerm, for leader to update itself
+	Success   bool
+	NextIndex int
 }
 
 func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply) {
@@ -253,12 +261,13 @@ func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply)
 		debug("AE: args.term ", args.LeaderID, " ", args.Term, "<", "rf.term ", rf.me, " ", rf.currentTerm)
 		reply.Term = rf.currentTerm
 		reply.Success = false
+		reply.NextIndex = rf.commitIndex + 1
 		return
 	} else if args.Term > rf.currentTerm {
 		debug("AE: args.term ", args.LeaderID, " ", args.Term, ">", "rf.term ", rf.me, " ", rf.currentTerm)
 		rf.currentTerm = args.Term
 	}
-	reply.Term = rf.currentTerm
+
 	if len(rf.log) <= args.PrevLogIndex {
 		debug("fuck1 ", len(rf.log), " ", args.PrevLogIndex)
 		reply.Success = false
@@ -270,8 +279,13 @@ func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply)
 		reply.Success = true
 		if args.Entries != nil {
 			rf.log = append(rf.log, args.Entries...)
+			rf.commitIndex = min(args.LeaderCommit, len(rf.log)-1)
+			debug(rf.me, "accept AE from", args.LeaderID, " commitIndex=", rf.commitIndex)
+			rf.applyMsgCh <- len(rf.log) - 1
 		}
 	}
+	reply.Term = rf.currentTerm
+	reply.NextIndex = rf.commitIndex + 1
 	//	debug("After Append Entries:\n", rf, args, reply.Term, " ", reply.Success)
 	if rf.state != FOLLOWER {
 		rf.state = FOLLOWER
@@ -294,7 +308,8 @@ func (rf *Raft) sendAppendEntries(server int, args AppendEntriesArgs, reply *App
 			rf.appendEntryCh <- 1
 		} else if reply.Success {
 			if args.Entries != nil {
-				rf.nextIndex[server] += len(args.Entries)
+				rf.nextIndex[server] = reply.NextIndex
+				debug(server, " receive log from ", rf.me, " nextindex =", rf.nextIndex[server], " commitIndex=", rf.commitIndex)
 			}
 		} else {
 			debug("sendAppendEntries success ", reply.Success, "sender ", rf, "receiver")
@@ -305,21 +320,24 @@ func (rf *Raft) sendAppendEntries(server int, args AppendEntriesArgs, reply *App
 	}
 	return ok
 }
-func (rf *Raft) sendHeartbeats(server int) bool {
+func (rf *Raft) handleAppendEntries(server int) bool {
 	args := AppendEntriesArgs{}
 	args.Term = rf.currentTerm
 	args.LeaderID = rf.me
 	args.PrevLogIndex = rf.nextIndex[server] - 1
 	if args.PrevLogIndex >= len(rf.log) || args.PrevLogIndex < 0 {
-		debug("maybe an error", rf, "nextindex ", args.PrevLogIndex, "len ", len(rf.log))
+		debug("maybe an error", rf, "nextindex ", args.PrevLogIndex, "len ", len(rf.log), " to ", server)
 	}
-	args.PrevLogTerm = rf.log[rf.nextIndex[server]-1].Term
-
-	args.Entries = nil
+	args.PrevLogTerm = rf.log[args.PrevLogIndex].Term
+	if rf.commitIndex >= rf.nextIndex[server] {
+		args.Entries = append(args.Entries, rf.log[rf.nextIndex[server]])
+	}
 	args.LeaderCommit = rf.commitIndex
 	reply := AppendEntriesReply{}
 	ok := rf.sendAppendEntries(server, args, &reply)
-	//	debug("Heartbeats:  term=", reply.Term, "success? ", reply.Success)
+	if args.Entries != nil {
+		//debug("commitIndex=", args.LeaderCommit, " ", rf.me, " send AE to ", server, " preindex=", args.PrevLogIndex, " prevterm=", args.PrevLogTerm, " is success?", reply.Success)
+	}
 	return ok
 }
 
@@ -340,21 +358,27 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	index := -1
 	term := -1
 	isLeader := true
-	/*	_, ok := rf.GetState()
-		if ok {
-			go func(){
-				rf.mu.Lock()
-				rf.log = append(rf.log,{rf.currentTerm,command})
-				rf.mu.Unlock()
-
-				args := AppendEntriesArgs{}
-				args.Term = rf.currentTerm
-				args.LeaderID = rf.me
-				args.E
-			}()
-		} else {
-			isLeader = false
-		}*/
+	_, ok := rf.GetState()
+	if ok {
+		index = len(rf.log)
+		term = rf.currentTerm
+		go func() {
+			rf.mu.Lock()
+			e := Entry{rf.currentTerm, command}
+			rf.log = append(rf.log, e)
+			rf.commitIndex++
+			rf.mu.Unlock()
+			debug("client Start with ", rf.me, " commitIndex=", rf.commitIndex, " command=", command.(int))
+			for i := range rf.peers {
+				if i != rf.me {
+					rf.handleAppendEntries(i)
+				}
+			}
+			rf.applyMsgCh <- index
+		}()
+	} else {
+		isLeader = false
+	}
 	return index, term, isLeader
 }
 
@@ -394,6 +418,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.log = make([]Entry, 1)
 	rf.voteForCh = make(chan int)
 	rf.appendEntryCh = make(chan int)
+	rf.applyMsgCh = make(chan int)
 	rf.log[0] = Entry{0, -1}
 	for i := 0; i < len(rf.peers); i++ {
 		rf.nextIndex = append(rf.nextIndex, 1)
@@ -453,11 +478,21 @@ func Make(peers []*labrpc.ClientEnd, me int,
 					//heartbeats
 					for i := range rf.peers {
 						if i != rf.me {
-							go rf.sendHeartbeats(i)
+							go rf.handleAppendEntries(i)
 						}
 					}
 				}
 			}
+		}
+	}()
+	go func() {
+		for {
+			index := <-rf.applyMsgCh
+			var msg ApplyMsg
+			msg.Index = index
+			msg.Command = rf.log[index].Command
+			applyCh <- msg
+			debug("                   appmsg from ", rf.me, " index=", index, " command=", msg.Command.(int))
 		}
 	}()
 	return rf

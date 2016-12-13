@@ -140,6 +140,7 @@ func (rf *Raft) persist() {
 	e.Encode(rf.votedFor)
 	e.Encode(rf.commitIndex)
 	e.Encode(rf.log)
+	e.Encode(rf.lastApplied)
 	data := w.Bytes()
 	rf.persister.SaveRaftState(data)
 }
@@ -156,7 +157,7 @@ func (rf *Raft) readPersist(data []byte) {
 	d.Decode(&rf.votedFor)
 	d.Decode(&rf.commitIndex)
 	d.Decode(&rf.log)
-
+	d.Decode(&rf.lastApplied)
 }
 
 //
@@ -192,6 +193,7 @@ func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
 	//debug(args, rf, rf.me, " get requestVote from", args.CandidateID, logString(rf.log))
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+	defer rf.persist()
 	if args.Term < rf.currentTerm {
 		reply.VoteGranted = false
 		reply.Term = rf.currentTerm
@@ -238,6 +240,7 @@ func (rf *Raft) sendRequestVote(server int, args RequestVoteArgs, reply *Request
 	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+	defer rf.persist()
 	if ok {
 		if rf.state == FOLLOWER {
 			return ok
@@ -294,6 +297,7 @@ func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply)
 	//	debug("Append Entries:\n", rf, args)
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+	defer rf.persist()
 	if args.Term < rf.currentTerm {
 		debug("AE: args.term ", args.LeaderID, " ", args.Term, "<", "rf.term ", rf.me, " ", rf.currentTerm)
 		reply.Term = rf.currentTerm
@@ -338,6 +342,7 @@ func (rf *Raft) sendAppendEntries(server int, args AppendEntriesArgs, reply *App
 	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+	defer rf.persist()
 	if ok {
 		if rf.state != LEADER {
 			debug(rf, rf.me, " not be a leader")
@@ -381,6 +386,7 @@ func (rf *Raft) handleAppendEntries() {
 	if N != rf.commitIndex {
 		rf.mu.Lock()
 		rf.commitIndex = N
+		rf.persist()
 		rf.mu.Unlock()
 		rf.applyMsgCh <- true
 	}
@@ -428,6 +434,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		e := Entry{rf.currentTerm, command, index}
 		rf.log = append(rf.log, e)
 		term = rf.currentTerm
+		rf.persist()
 		rf.mu.Unlock()
 		debug("client Start with ", rf.me, " commitIndex=", rf.commitIndex, " index=", index, " command=", command.(int), "logs\n", logString(rf.log))
 	} else {

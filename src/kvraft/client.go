@@ -3,10 +3,15 @@ package raftkv
 import "labrpc"
 import "crypto/rand"
 import "math/big"
+import "sync"
 
 type Clerk struct {
 	servers []*labrpc.ClientEnd
 	// You will have to modify this struct.
+	mu       sync.Mutex
+	clerkId  int64
+	queryId  int
+	leaderId int
 }
 
 func nrand() int64 {
@@ -20,6 +25,10 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 	ck := new(Clerk)
 	ck.servers = servers
 	// You'll have to add code here.
+	ck.clerkId = nrand()
+	ck.queryId = 0
+	ck.leaderId = 0
+	DPrintf("Clerk %d ready", ck.clerkId)
 	return ck
 }
 
@@ -38,7 +47,29 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 func (ck *Clerk) Get(key string) string {
 
 	// You will have to modify this function.
-	return ""
+	ck.mu.Lock()
+	defer ck.mu.Unlock()
+	ret := ""
+	args := GetArgs{Key: key, ClerkId: ck.clerkId, QueryId: ck.queryId}
+	DPrintf("Clerk %d Get, queryId: %d, Key: %s LeaderId: %d", ck.clerkId, ck.queryId, key, ck.leaderId)
+	ck.queryId++
+	for i := ck.leaderId; true; i = (i + 1) % len(ck.servers) {
+		reply := GetReply{WrongLeader: false}
+		if ck.servers[i].Call("RaftKV.Get", &args, &reply) {
+			if !reply.WrongLeader {
+				ck.leaderId = i
+				if reply.Err == OK {
+					ret = reply.Value
+					break
+				} else if reply.Err == ErrNoKey {
+					ret = ""
+					break
+				}
+			}
+		}
+	}
+	DPrintf("%d received Get reply with %d leaderId: %d, Value: %s", ck.clerkId, args.QueryId, ck.leaderId, ret)
+	return ret
 }
 
 //
@@ -53,6 +84,22 @@ func (ck *Clerk) Get(key string) string {
 //
 func (ck *Clerk) PutAppend(key string, value string, op string) {
 	// You will have to modify this function.
+
+	ck.mu.Lock()
+	defer ck.mu.Unlock()
+	args := PutAppendArgs{Key: key, Value: value, Op: op, QueryId: ck.queryId, ClerkId: ck.clerkId}
+	DPrintf("Clerk %d PutAppend op: %s, queryId: %d, Key: %s Value %s LeaderId: %d", ck.clerkId, op, ck.queryId, key, value, ck.leaderId)
+	ck.queryId++
+	for i := ck.leaderId; true; i = (i + 1) % len(ck.servers) {
+		reply := PutAppendReply{WrongLeader: false}
+		if ck.servers[i].Call("RaftKV.PutAppend", &args, &reply) {
+			if !reply.WrongLeader && reply.Err == OK {
+				DPrintf("%d received PutAppend reply with %d , LeaderId: %d", ck.clerkId, args.QueryId, ck.leaderId)
+				ck.leaderId = i
+				break
+			}
+		}
+	}
 }
 
 func (ck *Clerk) Put(key string, value string) {
